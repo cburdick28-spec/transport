@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "copy-worker": "node scripts/copy-maplibre-worker.mjs",
+    "predev": "npm run copy-worker",
+    "prebuild": "npm run copy-worker"
   },
   "dependencies": {
     "maplibre-gl": "^6.15.0",

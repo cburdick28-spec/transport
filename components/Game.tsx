@@ -98,6 +98,7 @@ export default function GameView() {
   // ---------- map setup ----------
   useEffect(() => {
     if (!mapEl.current || mapRef.current) return;
+    maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
     const map = new maplibregl.Map({
       container: mapEl.current,
       style: {
