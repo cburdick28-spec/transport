@@ -4,8 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
-  BUS_CAP,
-  BUS_PRICE,
+  MODE_STATS,
   SHUTTLE_BUSES,
   SHUTTLE_COLOR,
   SHUTTLE_COST,
@@ -21,9 +20,11 @@ import {
   tick,
   type Game,
   type LngLat,
+  type Mode,
 } from "@/lib/sim";
 
 const COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#38bdf8", "#a78bfa", "#f472b6", "#14b8a6", "#eab308"];
+const MODES: Mode[] = ["bus", "tram", "metro"];
 const SPEEDS = [0, 3, 9, 24]; // game minutes per real second
 const SPEED_LABELS = ["⏸", "1×", "3×", "8×"];
 // OpenFreeMap: free vector map made for MapLibre. No API key or signup.
@@ -81,6 +82,7 @@ export default function GameView() {
   const [, force] = useState(0);
   const [speed, setSpeed] = useState(1);
   const [building, setBuilding] = useState(false);
+  const [buildMode, setBuildMode] = useState<Mode>("bus");
   const [draft, setDraft] = useState<LngLat[]>([]);
   const [routing, setRouting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -444,16 +446,16 @@ export default function GameView() {
   async function finishLine() {
     const pts = draftRef.current;
     if (pts.length < 2) return flash("Place at least 2 stops");
-    const cost = pts.length * STOP_PRICE + BUS_PRICE;
-    if (g.cash < cost) return flash(`Need ${eur(cost)} (stops + first bus)`);
+    const cost = pts.length * STOP_PRICE + MODE_STATS[buildMode].price;
+    if (g.cash < cost) return flash(`Need ${eur(cost)} (stops + first vehicle)`);
     setRouting(true);
     const legs = await Promise.all(pts.slice(0, -1).map((p, i) => fetchLeg(p, pts[i + 1])));
     const color = COLORS[g.lines.length % COLORS.length];
-    const line = buildLine(g, pts, legs, color);
+    const line = buildLine(g, pts, legs, color, buildMode);
     addBus(g, line);
     g.lines.push(line);
     g.cash -= cost;
-    pushLog(g, `Opened ${line.name} with ${pts.length} stops (${(line.len / 1000).toFixed(1)} km)`, "good");
+    pushLog(g, `Opened ${MODE_STATS[buildMode].icon} ${line.name} with ${pts.length} stops (${(line.len / 1000).toFixed(1)} km)`, "good");
     linesVer.current++;
     setRouting(false);
     cancelBuild();
@@ -462,10 +464,11 @@ export default function GameView() {
   function buyBus(lineId: number) {
     const line = g.lines.find((l) => l.id === lineId);
     if (!line) return;
-    if (g.cash < BUS_PRICE) return flash(`A bus costs ${eur(BUS_PRICE)}`);
-    g.cash -= BUS_PRICE;
+    const price = MODE_STATS[line.mode].price;
+    if (g.cash < price) return flash(`A ${MODE_STATS[line.mode].label.toLowerCase()} costs ${eur(price)}`);
+    g.cash -= price;
     addBus(g, line);
-    pushLog(g, `Bought a bus for ${line.name}`, "info");
+    pushLog(g, `Bought a ${MODE_STATS[line.mode].label.toLowerCase()} for ${line.name}`, "info");
   }
 
   function focusLine(lineId: number) {
@@ -568,13 +571,26 @@ export default function GameView() {
                 onClick={() => setBuilding(true)}
                 className="w-full rounded-xl bg-emerald-500 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-400"
               >
-                + New bus line
+                + New line
               </button>
             ) : (
               <div className="space-y-2">
+                <div className="flex gap-1.5">
+                  {MODES.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setBuildMode(m)}
+                      className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                        buildMode === m ? "bg-white text-slate-900" : "bg-white/10 text-slate-300 hover:bg-white/20"
+                      }`}
+                    >
+                      {MODE_STATS[m].icon} {MODE_STATS[m].label}
+                    </button>
+                  ))}
+                </div>
                 <p className="text-sm text-slate-300">
                   Click the map to place stops in order. {draft.length} placed · cost{" "}
-                  <b>{eur(draft.length * STOP_PRICE + BUS_PRICE)}</b>
+                  <b>{eur(draft.length * STOP_PRICE + MODE_STATS[buildMode].price)}</b>
                 </p>
                 <div className="flex gap-2">
                   <button
@@ -679,7 +695,7 @@ export default function GameView() {
           {/* lines */}
           <Card title={`Lines (${g.lines.length})`}>
             {g.lines.length === 0 ? (
-              <p className="text-sm text-slate-400">No lines yet. Hit “New bus line” and tap out a route.</p>
+              <p className="text-sm text-slate-400">No lines yet. Hit “New line” and tap out a route.</p>
             ) : (
               <ul className="space-y-2">
                 {g.lines.map((l) => {
@@ -691,18 +707,19 @@ export default function GameView() {
                       <div className="flex items-center justify-between">
                         <button onClick={() => focusLine(l.id)} className="flex items-center gap-2 text-sm font-semibold">
                           <span className="h-3 w-3 rounded-full" style={{ background: l.color }} />
-                          {l.name}
+                          {MODE_STATS[l.mode].icon} {l.name}
                         </button>
                         <button
                           onClick={() => buyBus(l.id)}
                           className="rounded-lg bg-white/10 px-2 py-1 text-xs font-semibold hover:bg-white/20"
                         >
-                          + Bus · {eur(BUS_PRICE)}
+                          + {MODE_STATS[l.mode].label} · {eur(MODE_STATS[l.mode].price)}
                         </button>
                       </div>
                       <div className="mt-1 text-xs text-slate-400">
-                        {(l.len / 1000).toFixed(1)} km · {l.stops.length} stops · {l.buses.length} bus
-                        {l.buses.length === 1 ? "" : "es"} · cap {BUS_CAP}
+                        {(l.len / 1000).toFixed(1)} km · {l.stops.length} stops · {l.buses.length}{" "}
+                        {MODE_STATS[l.mode].label.toLowerCase()}
+                        {l.buses.length === 1 ? "" : "es"} · cap {MODE_STATS[l.mode].cap}
                       </div>
                       <div className="mt-1 text-xs">
                         <span className={waiting > 40 ? "text-red-300" : "text-slate-300"}>{waiting} waiting</span>

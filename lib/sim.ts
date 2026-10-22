@@ -63,10 +63,26 @@ export interface Bus {
   lng: number;
   lat: number;
 }
+export type Mode = "bus" | "tram" | "metro";
+export interface ModeStats {
+  price: number;
+  cap: number;
+  speed: number; // meters per game-minute
+  costPerMin: number;
+  label: string;
+  icon: string;
+}
+export const MODE_STATS: Record<Mode, ModeStats> = {
+  bus: { price: 45000, cap: 40, speed: 340, costPerMin: 85 / 60, label: "Bus", icon: "🚌" },
+  tram: { price: 120000, cap: 90, speed: 420, costPerMin: 150 / 60, label: "Tram", icon: "🚊" },
+  metro: { price: 300000, cap: 220, speed: 680, costPerMin: 320 / 60, label: "Metro", icon: "🚇" },
+};
+
 export interface Line {
   id: number;
   name: string;
   color: string;
+  mode: Mode;
   stops: Stop[];
   coords: LngLat[];
   cum: number[];
@@ -112,9 +128,7 @@ export interface Game {
   bankrupt: boolean;
 }
 
-export const BUS_PRICE = 45000;
 export const STOP_PRICE = 2000;
-export const BUS_CAP = 40;
 export const SHUTTLE_COST = 6000; // leases 3 buses for one event
 export const SHUTTLE_BUSES = 3;
 export const SHUTTLE_COLOR = "#e879f9";
@@ -135,9 +149,6 @@ export function pickHub(lat: number, lng: number) {
   );
   return sorted.find((h) => distM(lat, lng, h.lat, h.lng) > 1500) ?? sorted[sorted.length - 1];
 }
-const BUS_COST_PER_MIN = 85 / 60;
-const SPEED_M_PER_MIN = 340; // ~20 km/h
-
 export function createGame(): Game {
   const g: Game = {
     now: 6 * 60,
@@ -200,6 +211,7 @@ export function buildLine(
   stopPts: LngLat[],
   legs: LngLat[][],
   color: string,
+  mode: Mode = "bus",
 ): Line {
   const coords: LngLat[] = [];
   const cum: number[] = [];
@@ -241,6 +253,7 @@ export function buildLine(
     id: g.nextId++,
     name: `Line ${++g.lineCount}`,
     color,
+    mode,
     stops,
     coords,
     cum,
@@ -369,9 +382,10 @@ function arrive(g: Game, line: Line, bus: Bus) {
     // board matching direction
     let on = 0;
     const rest: Passenger[] = [];
+    const cap = MODE_STATS[line.mode].cap;
     for (const p of stop.queue) {
       const wants = Math.sign(p.dest - i);
-      if (wants === bus.dir && bus.pax.length < BUS_CAP) {
+      if (wants === bus.dir && bus.pax.length < cap) {
         bus.pax.push(p.dest);
         on++;
         const fare = g.fare * (line.fareMult ?? 1);
@@ -400,7 +414,7 @@ function stepBus(g: Game, line: Line, bus: Bus, dt: number) {
     return;
   }
   const fx = fxAt(g, bus.lat, bus.lng);
-  const step = SPEED_M_PER_MIN * fx.speed * dt;
+  const step = MODE_STATS[line.mode].speed * fx.speed * dt;
   const target = line.stopDist[bus.next];
   if (bus.dir * (target - bus.d) <= step) {
     bus.d = target;
@@ -479,7 +493,7 @@ export function tick(g: Game, dtTotal: number) {
       spawnPax(g, line, dt, hour);
       for (const bus of line.buses) {
         stepBus(g, line, bus, dt);
-        const c = BUS_COST_PER_MIN * dt;
+        const c = MODE_STATS[line.mode].costPerMin * dt;
         g.cash -= c;
         g.costToday += c;
       }
