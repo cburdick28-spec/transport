@@ -514,7 +514,9 @@ export default function GameView() {
 
   return (
     <div className="relative h-dvh w-full overflow-hidden bg-[#0b0f17] text-slate-100">
-      <div ref={mapEl} className="absolute inset-0" />
+      <div className="absolute inset-0">
+        <div ref={mapEl} style={{ width: "100%", height: "100%" }} />
+      </div>
 
       {/* top bar */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-wrap items-start gap-2 p-3">
