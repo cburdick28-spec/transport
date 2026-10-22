@@ -26,14 +26,13 @@ import {
 const COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#38bdf8", "#a78bfa", "#f472b6", "#14b8a6", "#eab308"];
 const SPEEDS = [0, 3, 9, 24]; // game minutes per real second
 const SPEED_LABELS = ["⏸", "1×", "3×", "8×"];
-const TILE_PROVIDERS: string[][] = [
-  [
-    "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-    "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-    "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-  ],
-  ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-];
+// OpenFreeMap: free vector map made for MapLibre. No API key or signup.
+const MAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
+const BLANK_STYLE = {
+  version: 8 as const,
+  sources: {},
+  layers: [{ id: "bg", type: "background" as const, paint: { "background-color": "#e8ecf1" } }],
+};
 const EMPTY = { type: "FeatureCollection", features: [] } as GeoJSON.FeatureCollection;
 
 const eur = (n: number) =>
@@ -101,21 +100,7 @@ export default function GameView() {
     maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
     const map = new maplibregl.Map({
       container: mapEl.current,
-      style: {
-        version: 8,
-        sources: {
-          base: {
-            type: "raster",
-            tiles: TILE_PROVIDERS[0],
-            tileSize: 256,
-            attribution: "© OpenStreetMap contributors © CARTO",
-          },
-        },
-        layers: [
-          { id: "bg", type: "background", paint: { "background-color": "#0b0f17" } },
-          { id: "base", type: "raster", source: "base" },
-        ],
-      },
+      style: MAP_STYLE,
       center: [-3.7038, 40.4168],
       zoom: 12.3,
       minZoom: 10.5,
@@ -127,34 +112,8 @@ export default function GameView() {
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
-    // If map tiles can't load (school filter, offline), fall back and then keep playing on a blank map
-    let provider = 0;
-    let tileErrs = 0;
-    let tileOk = 0;
-    map.on("data", (ev) => {
-      const e = ev as { sourceId?: string; tile?: unknown };
-      if (e.sourceId === "base" && e.tile) tileOk++;
-    });
-    map.on("error", (ev) => {
-      const e = ev as { sourceId?: string; tile?: unknown };
-      if (e.sourceId !== "base" || !e.tile) return;
-      tileErrs++;
-      if (tileOk > 0 || tileErrs < 6) return;
-      tileErrs = 0;
-      provider++;
-      if (provider < TILE_PROVIDERS.length) {
-        try {
-          (map.getSource("base") as maplibregl.RasterTileSource).setTiles(TILE_PROVIDERS[provider]);
-          setTilesState("osm");
-        } catch {
-          setTilesState("blocked");
-        }
-      } else {
-        setTilesState("blocked");
-      }
-    });
-
-    map.on("load", () => {
+    const addGameLayers = () => {
+      if (map.getSource("zones")) return; // already set up
       for (const id of ["zones", "events", "lines", "stops", "buses", "draft"]) {
         map.addSource(id, { type: "geojson", data: EMPTY });
       }
@@ -168,7 +127,7 @@ export default function GameView() {
         type: "FeatureCollection",
         features: ZONES.map((z) => {
           const f = circlePoly(z.lat, z.lng, z.r);
-          f.properties = { o: (z.w / 100) * 0.12 };
+          f.properties = { o: (z.w / 100) * 0.2 };
           return f;
         }),
       });
@@ -247,7 +206,18 @@ export default function GameView() {
         },
       });
       linesVer.current++;
+    };
+    map.on("load", () => {
+      clearTimeout(fallbackTimer);
+      addGameLayers();
     });
+    // If the map style can't load (school filter, offline), keep playing on a blank map
+    const fallbackTimer = setTimeout(() => {
+      if (map.getSource("zones")) return;
+      setTilesState("blocked");
+      map.once("style.load", addGameLayers);
+      map.setStyle(BLANK_STYLE);
+    }, 12000);
 
     map.on("click", (e) => {
       if (!buildRef.current) return;
@@ -256,6 +226,7 @@ export default function GameView() {
     });
 
     return () => {
+      clearTimeout(fallbackTimer);
       map.remove();
       mapRef.current = null;
     };
