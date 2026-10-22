@@ -4,7 +4,7 @@ export type LngLat = [number, number];
 
 // ---------- Madrid demand map ----------
 // Population weight per district. Stops near these generate more riders.
-const ZONES = [
+export const ZONES = [
   { lat: 40.4168, lng: -3.7038, r: 1200, w: 100 }, // Centro / Sol
   { lat: 40.437, lng: -3.704, r: 1300, w: 70 }, // Chamberí
   { lat: 40.43, lng: -3.677, r: 1500, w: 85 }, // Salamanca
@@ -73,6 +73,8 @@ export interface Line {
   stopDist: number[];
   len: number;
   buses: Bus[];
+  shuttleUntil?: number;
+  fareMult?: number;
 }
 export interface EventInst {
   uid: number;
@@ -83,6 +85,7 @@ export interface EventInst {
   announced: boolean;
   started: boolean;
   ended: boolean;
+  shuttle?: boolean;
 }
 export interface LogEntry {
   t: number;
@@ -98,6 +101,7 @@ export interface Game {
   events: EventInst[];
   log: LogEntry[];
   nextId: number;
+  lineCount: number;
   lastSchedDay: number;
   revToday: number;
   costToday: number;
@@ -111,6 +115,26 @@ export interface Game {
 export const BUS_PRICE = 45000;
 export const STOP_PRICE = 2000;
 export const BUS_CAP = 40;
+export const SHUTTLE_COST = 6000; // leases 3 buses for one event
+export const SHUTTLE_BUSES = 3;
+export const SHUTTLE_COLOR = "#e879f9";
+
+const HUBS: { name: string; lng: number; lat: number }[] = [
+  { name: "Atocha", lng: -3.6915, lat: 40.4065 },
+  { name: "Nuevos Ministerios", lng: -3.692, lat: 40.446 },
+  { name: "Moncloa", lng: -3.719, lat: 40.435 },
+  { name: "Plaza Elíptica", lng: -3.7183, lat: 40.3855 },
+  { name: "Av. de América", lng: -3.677, lat: 40.438 },
+  { name: "Sol", lng: -3.7038, lat: 40.4168 },
+];
+
+// nearest big hub that is at least ~1.5 km from the event so the shuttle is worth it
+export function pickHub(lat: number, lng: number) {
+  const sorted = [...HUBS].sort(
+    (a, b) => distM(lat, lng, a.lat, a.lng) - distM(lat, lng, b.lat, b.lng),
+  );
+  return sorted.find((h) => distM(lat, lng, h.lat, h.lng) > 1500) ?? sorted[sorted.length - 1];
+}
 const BUS_COST_PER_MIN = 85 / 60;
 const SPEED_M_PER_MIN = 340; // ~20 km/h
 
@@ -124,6 +148,7 @@ export function createGame(): Game {
     events: [],
     log: [],
     nextId: 1,
+    lineCount: 0,
     lastSchedDay: 0,
     revToday: 0,
     costToday: 0,
@@ -214,7 +239,7 @@ export function buildLine(
   });
   const line: Line = {
     id: g.nextId++,
-    name: `Line ${g.lines.length + 1}`,
+    name: `Line ${++g.lineCount}`,
     color,
     stops,
     coords,
@@ -349,8 +374,9 @@ function arrive(g: Game, line: Line, bus: Bus) {
       if (wants === bus.dir && bus.pax.length < BUS_CAP) {
         bus.pax.push(p.dest);
         on++;
-        g.cash += g.fare;
-        g.revToday += g.fare;
+        const fare = g.fare * (line.fareMult ?? 1);
+        g.cash += fare;
+        g.revToday += fare;
         g.riders++;
         g.ridersToday++;
         stop.served++;
@@ -443,6 +469,12 @@ export function tick(g: Game, dtTotal: number) {
     const hour = (g.now / 60) % 24;
     runEvents(g);
     rollDay(g);
+    if (g.lines.some((l) => l.shuttleUntil && g.now >= l.shuttleUntil)) {
+      for (const l of g.lines.filter((x) => x.shuttleUntil && g.now >= x.shuttleUntil)) {
+        pushLog(g, `${l.name} finished. Leased buses returned.`, "info");
+      }
+      g.lines = g.lines.filter((l) => !(l.shuttleUntil && g.now >= l.shuttleUntil));
+    }
     for (const line of g.lines) {
       spawnPax(g, line, dt, hour);
       for (const bus of line.buses) {

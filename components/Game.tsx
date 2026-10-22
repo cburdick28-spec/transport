@@ -6,11 +6,17 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import {
   BUS_CAP,
   BUS_PRICE,
+  SHUTTLE_BUSES,
+  SHUTTLE_COLOR,
+  SHUTTLE_COST,
   STOP_PRICE,
+  ZONES,
   addBus,
   buildLine,
   createGame,
   fmtClock,
+  fxAt,
+  pickHub,
   pushLog,
   tick,
   type Game,
@@ -20,6 +26,14 @@ import {
 const COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#38bdf8", "#a78bfa", "#f472b6", "#14b8a6", "#eab308"];
 const SPEEDS = [0, 3, 9, 24]; // game minutes per real second
 const SPEED_LABELS = ["⏸", "1×", "3×", "8×"];
+const TILE_PROVIDERS: string[][] = [
+  [
+    "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+    "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+    "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+  ],
+  ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+];
 const EMPTY = { type: "FeatureCollection", features: [] } as GeoJSON.FeatureCollection;
 
 const eur = (n: number) =>
@@ -61,6 +75,8 @@ export default function GameView() {
   const buildRef = useRef(false);
   const draftRef = useRef<LngLat[]>([]);
   const linesVer = useRef(0);
+  const lineSig = useRef("");
+  const prevSpeed = useRef(1);
   const markers = useRef<Map<number, maplibregl.Marker>>(new Map());
 
   const [, force] = useState(0);
@@ -70,6 +86,7 @@ export default function GameView() {
   const [routing, setRouting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [tiles, setTilesState] = useState<"ok" | "osm" | "blocked">("ok");
 
   const g = game.current;
 
@@ -88,16 +105,15 @@ export default function GameView() {
         sources: {
           base: {
             type: "raster",
-            tiles: [
-              "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-              "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-              "https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
-            ],
+            tiles: TILE_PROVIDERS[0],
             tileSize: 256,
             attribution: "© OpenStreetMap contributors © CARTO",
           },
         },
-        layers: [{ id: "base", type: "raster", source: "base" }],
+        layers: [
+          { id: "bg", type: "background", paint: { "background-color": "#0b0f17" } },
+          { id: "base", type: "raster", source: "base" },
+        ],
       },
       center: [-3.7038, 40.4168],
       zoom: 12.3,
@@ -110,10 +126,51 @@ export default function GameView() {
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
+    // If map tiles can't load (school filter, offline), fall back and then keep playing on a blank map
+    let provider = 0;
+    let tileErrs = 0;
+    let tileOk = 0;
+    map.on("data", (ev) => {
+      const e = ev as { sourceId?: string; tile?: unknown };
+      if (e.sourceId === "base" && e.tile) tileOk++;
+    });
+    map.on("error", (ev) => {
+      const e = ev as { sourceId?: string; tile?: unknown };
+      if (e.sourceId !== "base" || !e.tile) return;
+      tileErrs++;
+      if (tileOk > 0 || tileErrs < 6) return;
+      tileErrs = 0;
+      provider++;
+      if (provider < TILE_PROVIDERS.length) {
+        try {
+          (map.getSource("base") as maplibregl.RasterTileSource).setTiles(TILE_PROVIDERS[provider]);
+          setTilesState("osm");
+        } catch {
+          setTilesState("blocked");
+        }
+      } else {
+        setTilesState("blocked");
+      }
+    });
+
     map.on("load", () => {
-      for (const id of ["events", "lines", "stops", "buses", "draft"]) {
+      for (const id of ["zones", "events", "lines", "stops", "buses", "draft"]) {
         map.addSource(id, { type: "geojson", data: EMPTY });
       }
+      map.addLayer({
+        id: "zones-fill",
+        type: "fill",
+        source: "zones",
+        paint: { "fill-color": "#38bdf8", "fill-opacity": ["get", "o"] },
+      });
+      (map.getSource("zones") as maplibregl.GeoJSONSource).setData({
+        type: "FeatureCollection",
+        features: ZONES.map((z) => {
+          const f = circlePoly(z.lat, z.lng, z.r);
+          f.properties = { o: (z.w / 100) * 0.12 };
+          return f;
+        }),
+      });
       map.addLayer({
         id: "events-fill",
         type: "fill",
@@ -212,8 +269,13 @@ export default function GameView() {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const src = map.getSource("draft") as maplibregl.GeoJSONSource | undefined;
+    if (!map) return;
+    let src: maplibregl.GeoJSONSource | undefined;
+    try {
+      src = map.getSource("draft") as maplibregl.GeoJSONSource | undefined;
+    } catch {
+      return;
+    }
     if (!src) return;
     const feats: GeoJSON.Feature[] = draft.map((p) => ({
       type: "Feature",
@@ -245,7 +307,7 @@ export default function GameView() {
       if (sp > 0 && !game.current.bankrupt) tick(game.current, realDt * sp);
 
       const map = mapRef.current;
-      const ready = map && map.isStyleLoaded() && map.getSource("buses");
+      const ready = map && map.getSource("buses");
       if (ready && map) {
         const gm = game.current;
         if (nowMs - lastRender > 90) {
@@ -274,6 +336,11 @@ export default function GameView() {
             type: "FeatureCollection",
             features: stopF,
           });
+        }
+        const sig = gm.lines.map((l) => l.id).join(",");
+        if (sig !== lineSig.current) {
+          lineSig.current = sig;
+          linesVer.current++;
         }
         if (linesVer.current > 0) {
           linesVer.current = 0;
@@ -339,8 +406,56 @@ export default function GameView() {
 
   // ---------- actions ----------
   function setSpd(i: number) {
+    if (i > 0) prevSpeed.current = i;
     speedRef.current = i;
     setSpeed(i);
+  }
+
+  const togglePause = useCallback(() => {
+    if (speedRef.current === 0) {
+      speedRef.current = prevSpeed.current || 1;
+    } else {
+      prevSpeed.current = speedRef.current;
+      speedRef.current = 0;
+    }
+    setSpeed(speedRef.current);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      togglePause();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [togglePause]);
+
+  async function startShuttle(uid: number) {
+    const e = g.events.find((x) => x.uid === uid);
+    if (!e || e.shuttle || e.ended) return;
+    const target = e.def.effects.find((x) => x.kind === "surge" && x.r < 1e6);
+    if (!target) return;
+    if (fxAt(g, target.lat, target.lng).closed) return flash("That area is closed right now");
+    if (g.cash < SHUTTLE_COST) return flash(`Shuttle lease costs ${eur(SHUTTLE_COST)}`);
+    e.shuttle = true; // lock immediately so it can't be double-clicked
+    g.cash -= SHUTTLE_COST;
+    setRouting(true);
+    const hub = pickHub(target.lat, target.lng);
+    const a: LngLat = [hub.lng, hub.lat];
+    const b: LngLat = [target.lng, target.lat];
+    const leg = await fetchLeg(a, b);
+    const line = buildLine(g, [a, b], [leg], SHUTTLE_COLOR);
+    line.name = `${e.def.emoji} Shuttle`;
+    line.shuttleUntil = e.end + 30;
+    line.fareMult = 2; // event tickets cost double
+    line.stops[0].base = Math.max(line.stops[0].base, 160); // hubs are busy
+    for (let i = 0; i < SHUTTLE_BUSES; i++) addBus(g, line);
+    g.lines.push(line);
+    pushLog(g, `${e.def.emoji} Shuttle running ${hub.name} → ${e.def.name} (${SHUTTLE_BUSES} leased buses)`, "good");
+    setRouting(false);
   }
 
   function undo() {
@@ -412,7 +527,16 @@ export default function GameView() {
           <span className="px-2 text-sm font-semibold tabular-nums">
             Day {clock.day} · {clock.time}
           </span>
-          {SPEEDS.map((_, i) => (
+          <button
+            onClick={togglePause}
+            title="Space"
+            className={`h-8 rounded-lg px-3 text-sm font-bold transition ${
+              speed === 0 ? "bg-amber-400 text-slate-900" : "bg-white/10 text-white hover:bg-white/20"
+            }`}
+          >
+            {speed === 0 ? "▶ Play" : "⏸ Pause"}
+          </button>
+          {SPEEDS.map((_, i) => i === 0 ? null : (
             <button
               key={i}
               onClick={() => setSpd(i)}
@@ -431,6 +555,20 @@ export default function GameView() {
           {panelOpen ? "Hide panel" : "Show panel"}
         </button>
       </div>
+
+      {tiles !== "ok" && (
+        <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-sky-300/30 bg-black/70 px-4 py-1.5 text-xs font-semibold text-sky-200 backdrop-blur">
+          {tiles === "osm"
+            ? "Switched to the backup map server"
+            : "Map tiles are blocked on this network. Blue glow = busy districts. The game still works."}
+        </div>
+      )}
+
+      {speed === 0 && (
+        <div className="pointer-events-none absolute bottom-16 left-1/2 z-10 -translate-x-1/2 rounded-full border border-amber-300/40 bg-black/70 px-4 py-1.5 text-sm font-bold tracking-wide text-amber-200 backdrop-blur">
+          PAUSED · press Space to resume
+        </div>
+      )}
 
       {/* live event banners */}
       {liveEvents.length > 0 && (
@@ -526,6 +664,18 @@ export default function GameView() {
                         </span>
                       </div>
                       <p className="mt-1 text-xs leading-snug text-slate-400">{e.def.blurb}</p>
+                      {e.def.effects.some((x) => x.kind === "surge" && x.r < 1e6) &&
+                        (e.shuttle ? (
+                          <div className="mt-2 text-xs font-semibold text-fuchsia-300">🚌 Shuttle running</div>
+                        ) : (
+                          <button
+                            onClick={() => startShuttle(e.uid)}
+                            disabled={routing}
+                            className="mt-2 w-full rounded-lg bg-fuchsia-500/20 px-2 py-1.5 text-xs font-bold text-fuchsia-200 transition hover:bg-fuchsia-500/30 disabled:opacity-40"
+                          >
+                            🚌 Run event shuttle · {eur(SHUTTLE_COST)} · 2× fares
+                          </button>
+                        ))}
                       <div className="mt-1.5 flex flex-wrap gap-1.5 text-[11px]">
                         {e.def.effects
                           .filter((x) => x.r < 1e6)
