@@ -1,23 +1,7 @@
-import { EVENT_DEFS, type EventDef, type EffectKind } from "./events";
+import type { EventDef, EffectKind } from "./events";
+import type { CityDef } from "./cities";
 
 export type LngLat = [number, number];
-
-// ---------- Madrid demand map ----------
-// Population weight per district. Stops near these generate more riders.
-export const ZONES = [
-  { lat: 40.4168, lng: -3.7038, r: 1200, w: 100 }, // Centro / Sol
-  { lat: 40.437, lng: -3.704, r: 1300, w: 70 }, // Chamberí
-  { lat: 40.43, lng: -3.677, r: 1500, w: 85 }, // Salamanca
-  { lat: 40.4153, lng: -3.6844, r: 1100, w: 55 }, // Retiro
-  { lat: 40.4531, lng: -3.6883, r: 1400, w: 75 }, // Chamartín
-  { lat: 40.435, lng: -3.719, r: 1300, w: 60 }, // Moncloa
-  { lat: 40.4065, lng: -3.6915, r: 1400, w: 70 }, // Atocha / Arganzuela
-  { lat: 40.46, lng: -3.7, r: 1300, w: 65 }, // Tetuán
-  { lat: 40.393, lng: -3.66, r: 1800, w: 80 }, // Vallecas
-  { lat: 40.383, lng: -3.728, r: 1800, w: 75 }, // Carabanchel
-  { lat: 40.385, lng: -3.704, r: 1500, w: 55 }, // Usera
-  { lat: 40.44, lng: -3.65, r: 1600, w: 65 }, // Ciudad Lineal
-];
 
 export function distM(aLat: number, aLng: number, bLat: number, bLng: number) {
   const R = 6371000;
@@ -30,9 +14,9 @@ export function distM(aLat: number, aLng: number, bLat: number, bLng: number) {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
-export function density(lat: number, lng: number) {
+export function density(city: CityDef, lat: number, lng: number) {
   let sum = 6; // everywhere has a little demand
-  for (const z of ZONES) {
+  for (const z of city.zones) {
     const d = distM(lat, lng, z.lat, z.lng);
     sum += z.w * Math.exp(-((d / (z.r * 1.1)) ** 2));
   }
@@ -109,6 +93,7 @@ export interface LogEntry {
   tone: "info" | "warn" | "good" | "bad";
 }
 export interface Game {
+  city: CityDef;
   now: number; // game minutes since day 0 00:00
   cash: number;
   fare: number;
@@ -126,33 +111,28 @@ export interface Game {
   abandoned: number;
   history: { day: number; profit: number; riders: number }[];
   bankrupt: boolean;
+  infiniteMoney: boolean;
+  cityObjectiveDone: boolean;
 }
 
 export const STOP_PRICE = 2000;
 export const SHUTTLE_COST = 6000; // leases 3 buses for one event
 export const SHUTTLE_BUSES = 3;
 export const SHUTTLE_COLOR = "#e879f9";
-
-const HUBS: { name: string; lng: number; lat: number }[] = [
-  { name: "Atocha", lng: -3.6915, lat: 40.4065 },
-  { name: "Nuevos Ministerios", lng: -3.692, lat: 40.446 },
-  { name: "Moncloa", lng: -3.719, lat: 40.435 },
-  { name: "Plaza Elíptica", lng: -3.7183, lat: 40.3855 },
-  { name: "Av. de América", lng: -3.677, lat: 40.438 },
-  { name: "Sol", lng: -3.7038, lat: 40.4168 },
-];
+const INFINITE_CASH_FLOOR = 1_000_000_000;
 
 // nearest big hub that is at least ~1.5 km from the event so the shuttle is worth it
-export function pickHub(lat: number, lng: number) {
-  const sorted = [...HUBS].sort(
+export function pickHub(city: CityDef, lat: number, lng: number) {
+  const sorted = [...city.hubs].sort(
     (a, b) => distM(lat, lng, a.lat, a.lng) - distM(lat, lng, b.lat, b.lng),
   );
   return sorted.find((h) => distM(lat, lng, h.lat, h.lng) > 1500) ?? sorted[sorted.length - 1];
 }
-export function createGame(): Game {
+export function createGame(city: CityDef, startCash = 150000): Game {
   const g: Game = {
+    city,
     now: 6 * 60,
-    cash: 150000,
+    cash: startCash,
     fare: 1.5,
     rep: 70,
     lines: [],
@@ -168,10 +148,12 @@ export function createGame(): Game {
     abandoned: 0,
     history: [],
     bankrupt: false,
+    infiniteMoney: false,
+    cityObjectiveDone: false,
   };
-  pushLog(g, "Welcome to Madrid. Build your first line.", "info");
+  pushLog(g, `Welcome to ${city.name}. Build your first line.`, "info");
   // First event is guaranteed so you learn how they work
-  scheduleEvent(g, EVENT_DEFS[0], 20 * 60);
+  if (city.events.length > 0) scheduleEvent(g, city.events[0], 20 * 60);
   return g;
 }
 
@@ -195,7 +177,7 @@ function scheduleEvent(g: Game, def: EventDef, startMin: number) {
 
 function pickDef(g: Game): EventDef {
   const recent = g.events.slice(-3).map((e) => e.def.id);
-  const pool = EVENT_DEFS.filter((d) => !recent.includes(d.id));
+  const pool = g.city.events.filter((d) => !recent.includes(d.id));
   const total = pool.reduce((s, d) => s + d.weight, 0);
   let r = Math.random() * total;
   for (const d of pool) {
@@ -245,7 +227,7 @@ export function buildLine(
       lat: pt[1],
       queue: [],
       closed: false,
-      base: density(pt[1], pt[0]),
+      base: density(g.city, pt[1], pt[0]),
       served: 0,
     };
   });
@@ -498,9 +480,15 @@ export function tick(g: Game, dtTotal: number) {
         g.costToday += c;
       }
     }
-    if (!g.bankrupt && g.cash < -50000) {
+    if (g.infiniteMoney) {
+      if (g.cash < INFINITE_CASH_FLOOR) g.cash = INFINITE_CASH_FLOOR;
+    } else if (!g.bankrupt && g.cash < -50000) {
       g.bankrupt = true;
       pushLog(g, "Bankrupt! The city council is taking over your lines.", "bad");
+    }
+    if (g.city.unlockRiders != null && !g.cityObjectiveDone && g.riders >= g.city.unlockRiders) {
+      g.cityObjectiveDone = true;
+      pushLog(g, "🎉 Ridership goal reached! A new city is open on the map.", "good");
     }
   }
 }

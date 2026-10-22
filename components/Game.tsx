@@ -9,7 +9,6 @@ import {
   SHUTTLE_COLOR,
   SHUTTLE_COST,
   STOP_PRICE,
-  ZONES,
   addBus,
   buildLine,
   createGame,
@@ -22,9 +21,21 @@ import {
   type LngLat,
   type Mode,
 } from "@/lib/sim";
+import { CITIES, type CityDef, type Zone } from "@/lib/cities";
 
 const COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#38bdf8", "#a78bfa", "#f472b6", "#14b8a6", "#eab308"];
 const MODES: Mode[] = ["bus", "tram", "metro"];
+
+function zonesFC(zones: Zone[]): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: zones.map((z) => {
+      const f = circlePoly(z.lat, z.lng, z.r);
+      f.properties = { o: (z.w / 100) * 0.2 };
+      return f;
+    }),
+  };
+}
 const SPEEDS = [0, 3, 9, 24]; // game minutes per real second
 const SPEED_LABELS = ["⏸", "1×", "3×", "8×"];
 // OpenFreeMap: free vector map made for MapLibre. No API key or signup.
@@ -70,7 +81,7 @@ async function fetchLeg(a: LngLat, b: LngLat): Promise<LngLat[]> {
 export default function GameView() {
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const game = useRef<Game>(createGame());
+  const game = useRef<Game>(createGame(CITIES[0]));
   const speedRef = useRef(1);
   const buildRef = useRef(false);
   const draftRef = useRef<LngLat[]>([]);
@@ -78,6 +89,7 @@ export default function GameView() {
   const lineSig = useRef("");
   const prevSpeed = useRef(1);
   const markers = useRef<Map<number, maplibregl.Marker>>(new Map());
+  const objectiveSeen = useRef(false);
 
   const [, force] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -88,6 +100,7 @@ export default function GameView() {
   const [toast, setToast] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [tiles, setTilesState] = useState<"ok" | "osm" | "blocked">("ok");
+  const [unlockedIds, setUnlockedIds] = useState<Set<string>>(() => new Set([CITIES[0].id]));
 
   const g = game.current;
 
@@ -103,13 +116,10 @@ export default function GameView() {
     const map = new maplibregl.Map({
       container: mapEl.current,
       style: MAP_STYLE,
-      center: [-3.7038, 40.4168],
-      zoom: 12.3,
+      center: g.city.center,
+      zoom: g.city.zoom,
       minZoom: 10.5,
-      maxBounds: [
-        [-4.0, 40.25],
-        [-3.4, 40.6],
-      ],
+      maxBounds: g.city.bounds,
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
@@ -125,14 +135,7 @@ export default function GameView() {
         source: "zones",
         paint: { "fill-color": "#38bdf8", "fill-opacity": ["get", "o"] },
       });
-      (map.getSource("zones") as maplibregl.GeoJSONSource).setData({
-        type: "FeatureCollection",
-        features: ZONES.map((z) => {
-          const f = circlePoly(z.lat, z.lng, z.r);
-          f.properties = { o: (z.w / 100) * 0.2 };
-          return f;
-        }),
-      });
+      (map.getSource("zones") as maplibregl.GeoJSONSource).setData(zonesFC(g.city.zones));
       map.addLayer({
         id: "events-fill",
         type: "fill",
@@ -368,6 +371,15 @@ export default function GameView() {
           });
         }
       }
+      if (game.current.cityObjectiveDone && !objectiveSeen.current) {
+        objectiveSeen.current = true;
+        const idx = CITIES.findIndex((c) => c.id === game.current.city.id);
+        const next = CITIES[idx + 1];
+        if (next) {
+          setUnlockedIds((prev) => new Set(prev).add(next.id));
+          flash(`🎉 ${next.name} unlocked! See the Cities panel.`);
+        }
+      }
       if (nowMs - lastUi > 250) {
         lastUi = nowMs;
         force((v) => v + 1);
@@ -417,7 +429,7 @@ export default function GameView() {
     e.shuttle = true; // lock immediately so it can't be double-clicked
     g.cash -= SHUTTLE_COST;
     setRouting(true);
-    const hub = pickHub(target.lat, target.lng);
+    const hub = pickHub(g.city, target.lat, target.lng);
     const a: LngLat = [hub.lng, hub.lat];
     const b: LngLat = [target.lng, target.lat];
     const leg = await fetchLeg(a, b);
@@ -480,6 +492,41 @@ export default function GameView() {
     map.fitBounds(b, { padding: 120, duration: 800, maxZoom: 15 });
   }
 
+  function toggleInfinite() {
+    g.infiniteMoney = !g.infiniteMoney;
+    force((v) => v + 1);
+  }
+
+  function travelTo(cityId: string) {
+    if (cityId === g.city.id) return;
+    const city = CITIES.find((c) => c.id === cityId);
+    if (!city) return;
+    cancelBuild();
+    for (const m of markers.current.values()) m.remove();
+    markers.current.clear();
+    objectiveSeen.current = false;
+    const infinite = g.infiniteMoney;
+    game.current = createGame(city, g.cash);
+    game.current.infiniteMoney = infinite;
+    linesVer.current++;
+    lineSig.current = "";
+
+    const map = mapRef.current;
+    if (map) {
+      map.setMaxBounds(undefined);
+      map.jumpTo({ center: city.center, zoom: city.zoom });
+      map.setMaxBounds(city.bounds);
+      const zones = map.getSource("zones") as maplibregl.GeoJSONSource | undefined;
+      zones?.setData(zonesFC(city.zones));
+      for (const id of ["lines", "stops", "buses", "events", "draft"]) {
+        const src = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
+        src?.setData(EMPTY);
+      }
+    }
+    flash(`Welcome to ${city.name}!`);
+    force((v) => v + 1);
+  }
+
   const clock = fmtClock(g.now);
   const sat = Math.round(g.rep);
   const profitToday = g.revToday - g.costToday;
@@ -495,6 +542,10 @@ export default function GameView() {
       {/* top bar */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-wrap items-start gap-2 p-3">
         <div className="pointer-events-auto flex items-center gap-4 rounded-2xl border border-white/10 bg-[#0b0f17]/90 px-4 py-2 shadow-xl backdrop-blur">
+          <div className="leading-tight">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">City</div>
+            <div className="text-sm font-bold">{g.city.name}</div>
+          </div>
           <Stat label="Cash" value={eur(g.cash)} tone={g.cash < 0 ? "bad" : "good"} />
           <Stat label="Today" value={(profitToday >= 0 ? "+" : "") + eur(profitToday)} tone={profitToday >= 0 ? "good" : "bad"} />
           <Stat label="Riders" value={g.ridersToday.toLocaleString("en-US")} />
@@ -525,6 +576,16 @@ export default function GameView() {
             </button>
           ))}
         </div>
+        <button
+          onClick={toggleInfinite}
+          className={`pointer-events-auto rounded-2xl border px-3 py-2 text-sm font-semibold shadow-xl backdrop-blur transition ${
+            g.infiniteMoney
+              ? "border-amber-300/40 bg-amber-400/20 text-amber-200"
+              : "border-white/10 bg-[#0b0f17]/90 hover:bg-white/10"
+          }`}
+        >
+          💰 {g.infiniteMoney ? "Infinite money: ON" : "Infinite money"}
+        </button>
         <button
           onClick={() => setPanelOpen((v) => !v)}
           className="pointer-events-auto ml-auto rounded-2xl border border-white/10 bg-[#0b0f17]/90 px-3 py-2 text-sm font-semibold shadow-xl backdrop-blur hover:bg-white/10"
@@ -629,10 +690,57 @@ export default function GameView() {
             </label>
           </Card>
 
+          {/* cities */}
+          <Card title="Cities">
+            <ul className="space-y-1.5">
+              {CITIES.map((c, i) => {
+                const unlocked = unlockedIds.has(c.id);
+                const current = c.id === g.city.id;
+                const next = CITIES[i + 1];
+                const done = next ? unlockedIds.has(next.id) : false;
+                const icon = current ? "▶" : done ? "✅" : unlocked ? "🔓" : "🔒";
+                return (
+                  <li
+                    key={c.id}
+                    className={`flex items-center justify-between rounded-xl p-2.5 ${
+                      current ? "bg-emerald-500/10" : "bg-white/5"
+                    }`}
+                  >
+                    <div>
+                      <div className="text-sm font-semibold">
+                        {icon} {c.name}
+                      </div>
+                      {!unlocked && (
+                        <div className="text-xs text-slate-400">
+                          Unlocks at {CITIES[i - 1]?.unlockRiders?.toLocaleString()} riders in{" "}
+                          {CITIES[i - 1]?.name}
+                        </div>
+                      )}
+                      {current && c.unlockRiders != null && !done && (
+                        <div className="text-xs text-slate-400">
+                          {g.riders.toLocaleString()} / {c.unlockRiders.toLocaleString()} riders to unlock{" "}
+                          {next?.name}
+                        </div>
+                      )}
+                    </div>
+                    {unlocked && !current && (
+                      <button
+                        onClick={() => travelTo(c.id)}
+                        className="rounded-lg bg-white/10 px-2 py-1 text-xs font-semibold hover:bg-white/20"
+                      >
+                        Travel
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+
           {/* events */}
           <Card title="Events">
             {visibleEvents.length === 0 ? (
-              <p className="text-sm text-slate-400">Nothing on the radar. Madrid is quiet… for now.</p>
+              <p className="text-sm text-slate-400">Nothing on the radar. {g.city.name} is quiet… for now.</p>
             ) : (
               <ul className="space-y-2">
                 {visibleEvents.map((e) => {
