@@ -23,6 +23,10 @@ Each event is announced hours ahead, then hits a part of the map:
 The 💰 toggle in the top bar gives you an effectively unlimited cash floor, in any city, any time — for playing
 around with the map and lines without worrying about going bankrupt.
 
+## 3D view
+Real extruded buildings render once you're zoomed in close. The 🏙️ toggle tilts and rotates the camera to see
+them; toggle it off to go back to the flat top-down view for easier line-building.
+
 ## Run it
 ```bash
 npm install

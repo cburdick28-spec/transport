@@ -100,6 +100,7 @@ export default function GameView() {
   const [toast, setToast] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [tiles, setTilesState] = useState<"ok" | "osm" | "blocked">("ok");
+  const [tilted, setTilted] = useState(false);
   const [unlockedIds, setUnlockedIds] = useState<Set<string>>(() => new Set([CITIES[0].id]));
 
   const g = game.current;
@@ -122,12 +123,27 @@ export default function GameView() {
       maxBounds: g.city.bounds,
     });
     mapRef.current = map;
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
 
     const addGameLayers = () => {
       if (map.getSource("zones")) return; // already set up
       for (const id of ["zones", "events", "lines", "stops", "buses", "draft"]) {
         map.addSource(id, { type: "geojson", data: EMPTY });
+      }
+      if (map.getSource("openmaptiles") && !map.getLayer("buildings-3d")) {
+        map.addLayer({
+          id: "buildings-3d",
+          type: "fill-extrusion",
+          source: "openmaptiles",
+          "source-layer": "building",
+          minzoom: 13,
+          paint: {
+            "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+            "fill-extrusion-height": ["coalesce", ["get", "render_height"], 6],
+            "fill-extrusion-color": "#cfd4de",
+            "fill-extrusion-opacity": 0.85,
+          },
+        });
       }
       map.addLayer({
         id: "zones-fill",
@@ -497,6 +513,12 @@ export default function GameView() {
     force((v) => v + 1);
   }
 
+  function toggle3D() {
+    const next = !tilted;
+    setTilted(next);
+    mapRef.current?.easeTo({ pitch: next ? 55 : 0, bearing: next ? -17 : 0, duration: 700 });
+  }
+
   function travelTo(cityId: string) {
     if (cityId === g.city.id) return;
     const city = CITIES.find((c) => c.id === cityId);
@@ -585,6 +607,16 @@ export default function GameView() {
           }`}
         >
           💰 {g.infiniteMoney ? "Infinite money: ON" : "Infinite money"}
+        </button>
+        <button
+          onClick={toggle3D}
+          className={`pointer-events-auto rounded-2xl border px-3 py-2 text-sm font-semibold shadow-xl backdrop-blur transition ${
+            tilted
+              ? "border-sky-300/40 bg-sky-400/20 text-sky-200"
+              : "border-white/10 bg-[#0b0f17]/90 hover:bg-white/10"
+          }`}
+        >
+          🏙️ {tilted ? "3D: ON" : "3D view"}
         </button>
         <button
           onClick={() => setPanelOpen((v) => !v)}
