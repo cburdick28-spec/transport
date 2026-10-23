@@ -654,54 +654,61 @@ export default function GameView() {
         </div>
       )}
 
+      {/* floating build bar — replaces the side panel while placing stops so every
+          inch of the map (including the area the panel normally covers) stays
+          clickable and no stop placement is silently swallowed by the panel */}
+      {building && (
+        <div className="pointer-events-auto absolute inset-x-0 bottom-3 z-20 mx-auto flex w-[min(34rem,calc(100vw-1.5rem))] flex-col gap-2 rounded-2xl border border-white/10 bg-[#0b0f17]/95 p-3 shadow-2xl backdrop-blur">
+          <div className="flex gap-1.5">
+            {MODES.map((m) => (
+              <button
+                key={m}
+                onClick={() => setBuildMode(m)}
+                className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                  buildMode === m ? "bg-white text-slate-900" : "bg-white/10 text-slate-300 hover:bg-white/20"
+                }`}
+              >
+                {MODE_STATS[m].icon} {MODE_STATS[m].label}
+              </button>
+            ))}
+          </div>
+          <p className="text-sm text-slate-300">
+            Click anywhere on the map to add stops, in order. {draft.length} placed · cost{" "}
+            <b>{eur(draft.length * STOP_PRICE + MODE_STATS[buildMode].price)}</b>
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={finishLine}
+              disabled={routing || draft.length < 2}
+              className="flex-1 rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40"
+            >
+              {routing ? "Routing…" : `Open line (${draft.length} stop${draft.length === 1 ? "" : "s"})`}
+            </button>
+            <button
+              onClick={undo}
+              disabled={draft.length === 0}
+              className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/20 disabled:opacity-40"
+            >
+              Undo
+            </button>
+            <button onClick={cancelBuild} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/20">
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* side panel */}
-      {panelOpen && (
+      {panelOpen && !building && (
         <div className="absolute bottom-3 left-3 top-[72px] z-10 flex w-[22rem] max-w-[calc(100vw-1.5rem)] flex-col gap-3 overflow-y-auto pr-1">
           {/* build */}
           <Card title="Build">
-            {!building ? (
-              <button
-                onClick={() => setBuilding(true)}
-                className="w-full rounded-xl bg-emerald-500 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-400"
-              >
-                + New line
-              </button>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex gap-1.5">
-                  {MODES.map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setBuildMode(m)}
-                      className={`flex-1 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
-                        buildMode === m ? "bg-white text-slate-900" : "bg-white/10 text-slate-300 hover:bg-white/20"
-                      }`}
-                    >
-                      {MODE_STATS[m].icon} {MODE_STATS[m].label}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-sm text-slate-300">
-                  Click the map to place stops in order. {draft.length} placed · cost{" "}
-                  <b>{eur(draft.length * STOP_PRICE + MODE_STATS[buildMode].price)}</b>
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={finishLine}
-                    disabled={routing || draft.length < 2}
-                    className="flex-1 rounded-xl bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40"
-                  >
-                    {routing ? "Routing…" : "Open line"}
-                  </button>
-                  <button onClick={undo} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/20">
-                    Undo
-                  </button>
-                  <button onClick={cancelBuild} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/20">
-                    ✕
-                  </button>
-                </div>
-              </div>
-            )}
+            <button
+              onClick={() => setBuilding(true)}
+              className="w-full rounded-xl bg-emerald-500 px-4 py-2.5 font-semibold text-slate-950 transition hover:bg-emerald-400"
+            >
+              + New line
+            </button>
             <label className="mt-3 flex items-center justify-between text-sm text-slate-300">
               Fare
               <span className="flex items-center gap-2">
