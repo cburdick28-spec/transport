@@ -15,6 +15,14 @@ export interface Hub {
   lat: number;
 }
 
+/** A big rail station where the player can run a Railgrid shift for cash + happiness. */
+export interface Station {
+  id: string;
+  name: string;
+  lng: number;
+  lat: number;
+}
+
 export interface CityDef {
   id: string;
   name: string;
@@ -23,6 +31,7 @@ export interface CityDef {
   bounds: [LngLat, LngLat];
   zones: Zone[];
   hubs: Hub[];
+  stations: Station[];
   events: EventDef[];
   /** Total riders to serve in this city to unlock the next one. null = final city. */
   unlockRiders: number | null;
@@ -31,8 +40,8 @@ export interface CityDef {
 const MADRID: CityDef = {
   id: "madrid",
   name: "Madrid",
-  center: [-3.7038, 40.4168],
-  zoom: 12.3,
+  center: [-3.695, 40.432],
+  zoom: 11.9,
   bounds: [
     [-4.0, 40.25],
     [-3.4, 40.6],
@@ -50,6 +59,10 @@ const MADRID: CityDef = {
     { lat: 40.383, lng: -3.728, r: 1800, w: 75 }, // Carabanchel
     { lat: 40.385, lng: -3.704, r: 1500, w: 55 }, // Usera
     { lat: 40.44, lng: -3.65, r: 1600, w: 65 }, // Ciudad Lineal
+  ],
+  stations: [
+    { id: "atocha", name: "Atocha", lng: -3.6915, lat: 40.4065 },
+    { id: "chamartin", name: "Chamartín", lng: -3.6826, lat: 40.4723 },
   ],
   hubs: [
     { name: "Atocha", lng: -3.6915, lat: 40.4065 },
@@ -203,6 +216,10 @@ const BARCELONA: CityDef = {
     { lat: 41.428, lng: 2.168, r: 1600, w: 55 }, // Horta-Guinardó
     { lat: 41.3755, lng: 2.17, r: 1100, w: 100 }, // Gothic Quarter / Las Ramblas
   ],
+  stations: [
+    { id: "sants", name: "Sants", lng: 2.14, lat: 41.3791 },
+    { id: "franca", name: "França", lng: 2.186, lat: 41.3836 },
+  ],
   hubs: [
     { name: "Plaça Catalunya", lng: 2.1701, lat: 41.3874 },
     { name: "Sants Estació", lng: 2.1403, lat: 41.3792 },
@@ -291,6 +308,10 @@ const LISBON: CityDef = {
     { lat: 38.714, lng: -9.165, r: 1200, w: 55 }, // Campo de Ourique
     { lat: 38.736, lng: -9.148, r: 1300, w: 65 }, // Avenidas Novas
     { lat: 38.706, lng: -9.172, r: 1100, w: 50 }, // Alcântara
+  ],
+  stations: [
+    { id: "santa-apolonia", name: "Santa Apolónia", lng: -9.1226, lat: 38.7138 },
+    { id: "entrecampos", name: "Entrecampos", lng: -9.1493, lat: 38.7448 },
   ],
   hubs: [
     { name: "Rossio", lng: -9.1393, lat: 38.7145 },
@@ -383,6 +404,10 @@ const PARIS: CityDef = {
     { lat: 48.8422, lng: 2.3219, r: 1100, w: 65 }, // Montparnasse
     { lat: 48.872, lng: 2.382, r: 1200, w: 55 }, // Belleville
     { lat: 48.8496, lng: 2.3487, r: 900, w: 60 }, // Quartier Latin
+  ],
+  stations: [
+    { id: "gare-de-lyon", name: "Gare de Lyon", lng: 2.3736, lat: 48.8443 },
+    { id: "gare-du-nord", name: "Gare du Nord", lng: 2.3553, lat: 48.8809 },
   ],
   hubs: [
     { name: "Châtelet", lng: 2.3472, lat: 48.8583 },

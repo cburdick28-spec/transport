@@ -102,6 +102,7 @@ export interface Game {
   events: EventInst[];
   log: LogEntry[];
   nextId: number;
+  stationCooldown: Record<string, number>;
   lineCount: number;
   lastSchedDay: number;
   revToday: number;
@@ -116,6 +117,36 @@ export interface Game {
 }
 
 export const STOP_PRICE = 2000;
+// ---------- Railgrid stations ----------
+// Click a station on the map to play a Railgrid shift. Your grade pays out in the city game.
+export const STATION_COOLDOWN_MIN = 1440; // one game day between shifts at the same station
+export const STATION_REWARDS: Record<string, { cash: number; rep: number }> = {
+  S: { cash: 30000, rep: 12 },
+  A: { cash: 18000, rep: 8 },
+  B: { cash: 10000, rep: 4 },
+  C: { cash: 4000, rep: 1 },
+  D: { cash: 0, rep: 0 },
+  F: { cash: -6000, rep: -8 },
+};
+
+export function stationWaitMin(g: Game, stationId: string) {
+  return Math.max(0, (g.stationCooldown[stationId] ?? 0) - g.now);
+}
+
+// Returns the reward that was applied, or null if the result was invalid or the station is on cooldown.
+export function applyStationResult(g: Game, stationId: string, grade: string) {
+  const st = g.city.stations.find((x) => x.id === stationId);
+  const r = Object.prototype.hasOwnProperty.call(STATION_REWARDS, grade) ? STATION_REWARDS[grade] : undefined;
+  if (!st || !r) return null;
+  if (stationWaitMin(g, stationId) > 0) return null;
+  g.stationCooldown[stationId] = g.now + STATION_COOLDOWN_MIN;
+  g.cash += r.cash;
+  g.rep = Math.max(0, Math.min(100, g.rep + r.rep));
+  const money = `${r.cash >= 0 ? "+" : "-"}€${Math.abs(r.cash).toLocaleString("en-US")}`;
+  pushLog(g, `🚉 ${st.name} shift graded ${grade}: ${money}, happiness ${r.rep >= 0 ? "+" : ""}${r.rep}`, r.cash >= 0 ? "good" : "bad");
+  return r;
+}
+
 export const SHUTTLE_COST = 6000; // leases 3 buses for one event
 export const SHUTTLE_BUSES = 3;
 export const SHUTTLE_COLOR = "#e879f9";
@@ -139,6 +170,7 @@ export function createGame(city: CityDef, startCash = 150000): Game {
     events: [],
     log: [],
     nextId: 1,
+    stationCooldown: {},
     lineCount: 0,
     lastSchedDay: 0,
     revToday: 0,

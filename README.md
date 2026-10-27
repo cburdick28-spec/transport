@@ -27,6 +27,23 @@ around with the map and lines without worrying about going bankrupt.
 Real extruded buildings render once you're zoomed in close. The 🏙️ toggle tilts and rotates the camera to see
 them; toggle it off to go back to the flat top-down view for easier line-building.
 
+## Railgrid stations
+Every city has two playable rail stations (Madrid: Atocha and Chamartín, Barcelona: Sants and França, Lisbon: Santa Apolónia and Entrecampos, Paris: Gare de Lyon and Gare du Nord). Click the 🚉 pin (or hit Play in the Stations card) to drop into
+[Railgrid](https://github.com/cburdick28-spec/station), the 3D station ops game. The city pauses while you play.
+Your shift grade pays out in the city game:
+
+| Grade | Cash | Happiness |
+|---|---|---|
+| S | +€30,000 | +12 |
+| A | +€18,000 | +8 |
+| B | +€10,000 | +4 |
+| C | +€4,000 | +1 |
+| D | 0 | 0 |
+| F (meltdown) | -€6,000 | -8 |
+
+Each station has a one game-day cooldown. Railgrid lives in `public/station/` with its own copy of Three.js (no CDN needed),
+and talks to the city through `postMessage` (`?embed=1` mode).
+
 ## Run it
 ```bash
 npm install

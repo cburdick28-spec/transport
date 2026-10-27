@@ -5,6 +5,8 @@ import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
   MODE_STATS,
+  applyStationResult,
+  stationWaitMin,
   SHUTTLE_BUSES,
   SHUTTLE_COLOR,
   SHUTTLE_COST,
@@ -21,7 +23,7 @@ import {
   type LngLat,
   type Mode,
 } from "@/lib/sim";
-import { CITIES, type CityDef, type Zone } from "@/lib/cities";
+import { CITIES, type CityDef, type Station, type Zone } from "@/lib/cities";
 
 const COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#38bdf8", "#a78bfa", "#f472b6", "#14b8a6", "#eab308"];
 const MODES: Mode[] = ["bus", "tram", "metro"];
@@ -90,6 +92,12 @@ export default function GameView() {
   const prevSpeed = useRef(1);
   const markers = useRef<Map<number, maplibregl.Marker>>(new Map());
   const objectiveSeen = useRef(false);
+  const stationEls = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const stationMarkers = useRef<maplibregl.Marker[]>([]);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const stationRef = useRef<string | null>(null); // station id while the Railgrid overlay is open
+  const resumeSpeed = useRef(0);
+  const openStationRef = useRef<(id: string) => void>(() => {});
 
   const [, force] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -102,6 +110,8 @@ export default function GameView() {
   const [tiles, setTilesState] = useState<"ok" | "osm" | "blocked">("ok");
   const [tilted, setTilted] = useState(false);
   const [unlockedIds, setUnlockedIds] = useState<Set<string>>(() => new Set([CITIES[0].id]));
+  const [station, setStation] = useState<{ st: Station; key: number } | null>(null);
+  const [stationReward, setStationReward] = useState<string | null>(null);
 
   const g = game.current;
 
@@ -124,6 +134,8 @@ export default function GameView() {
     });
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), "bottom-right");
+
+    rebuildStationPins();
 
     const addGameLayers = () => {
       if (map.getSource("zones")) return; // already set up
@@ -241,6 +253,8 @@ export default function GameView() {
     }, 12000);
 
     map.on("click", (e) => {
+      const tgt = e.originalEvent?.target as HTMLElement | null;
+      if (tgt?.closest?.(".station-hub")) return; // pin clicks never place stops
       if (!buildRef.current) return;
       draftRef.current = [...draftRef.current, [e.lngLat.lng, e.lngLat.lat]];
       setDraft(draftRef.current);
@@ -348,6 +362,18 @@ export default function GameView() {
         }
         if (nowMs - lastEv > 800) {
           lastEv = nowMs;
+          for (const st of gm.city.stations) {
+            const el = stationEls.current.get(st.id);
+            if (!el) continue;
+            const wait = stationWaitMin(gm, st.id);
+            const cooling = wait > 0;
+            el.classList.toggle("opacity-60", cooling);
+            el.classList.toggle("border-slate-500", cooling);
+            el.classList.toggle("border-sky-400", !cooling);
+            el.title = cooling
+              ? `${st.name} · next shift in ~${Math.ceil(wait / 60)}h`
+              : `${st.name} · play a station shift`;
+          }
           const evF: GeoJSON.Feature[] = [];
           const alive = new Set<number>();
           for (const e of gm.events) {
@@ -414,6 +440,7 @@ export default function GameView() {
   }
 
   const togglePause = useCallback(() => {
+    if (stationRef.current) return; // city stays paused while you're in a station
     if (speedRef.current === 0) {
       speedRef.current = prevSpeed.current || 1;
     } else {
@@ -434,6 +461,78 @@ export default function GameView() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePause]);
+
+  const closeStation = useCallback(() => {
+    stationRef.current = null;
+    setStation(null);
+    const r = resumeSpeed.current;
+    if (r > 0) {
+      speedRef.current = r;
+      setSpeed(r);
+    }
+  }, []);
+
+  function rebuildStationPins() {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const m of stationMarkers.current) m.remove();
+    stationMarkers.current = [];
+    stationEls.current.clear();
+    for (const st of game.current.city.stations) {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className =
+        "station-hub cursor-pointer rounded-xl border-2 border-sky-400 bg-[#0b0f17] px-2 py-1.5 text-xl leading-none shadow-lg";
+      el.textContent = "🚉";
+      el.title = `${st.name} station`;
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openStationRef.current(st.id);
+      });
+      stationMarkers.current.push(new maplibregl.Marker({ element: el }).setLngLat([st.lng, st.lat]).addTo(map));
+      stationEls.current.set(st.id, el);
+    }
+  }
+
+  function openStation(stationId: string) {
+    const st = g.city.stations.find((x) => x.id === stationId);
+    if (!st || stationRef.current || g.bankrupt) return;
+    if (buildRef.current) return flash("Finish or cancel your line first");
+    const wait = stationWaitMin(g, st.id);
+    if (wait > 0) return flash(`${st.name} is running smoothly. Next shift in ~${Math.ceil(wait / 60)}h`);
+    resumeSpeed.current = speedRef.current; // 0 if you were already paused
+    speedRef.current = 0;
+    setSpeed(0);
+    stationRef.current = st.id;
+    setStationReward(null);
+    setStation({ st, key: Date.now() });
+  }
+
+  useEffect(() => {
+    openStationRef.current = openStation;
+  });
+
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      const d = e.data as { type?: unknown; grade?: unknown } | null;
+      if (!d || typeof d !== "object") return;
+      if (d.type === "railgrid:close") {
+        closeStation();
+      } else if (d.type === "railgrid:result") {
+        const stationId = stationRef.current;
+        if (!stationId || typeof d.grade !== "string") return;
+        const r = applyStationResult(game.current, stationId, d.grade);
+        if (r) {
+          const money = `${r.cash >= 0 ? "+" : "-"}€${Math.abs(r.cash).toLocaleString("en-US")}`;
+          setStationReward(`Grade ${d.grade} · ${money} · happiness ${r.rep >= 0 ? "+" : ""}${r.rep}`);
+        }
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, [closeStation]);
 
   async function startShuttle(uid: number) {
     const e = g.events.find((x) => x.uid === uid);
@@ -530,6 +629,7 @@ export default function GameView() {
     const infinite = g.infiniteMoney;
     game.current = createGame(city, g.cash);
     game.current.infiniteMoney = infinite;
+    rebuildStationPins();
     linesVer.current++;
     lineSig.current = "";
 
@@ -839,6 +939,35 @@ export default function GameView() {
             )}
           </Card>
 
+          {/* stations */}
+          <Card title="Stations">
+            <ul className="space-y-2">
+              {g.city.stations.map((h) => {
+                const wait = stationWaitMin(g, h.id);
+                return (
+                  <li key={h.id} className="flex items-center justify-between gap-2 rounded-xl bg-white/5 p-2.5">
+                    <div>
+                      <div className="text-sm font-semibold">🚉 {h.name}</div>
+                      <div className="text-xs text-slate-400">
+                        {wait > 0 ? `Next shift in ~${Math.ceil(wait / 60)}h` : "Run the 3D station for cash + happiness"}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => openStation(h.id)}
+                      disabled={wait > 0}
+                      className="rounded-lg bg-sky-500/20 px-3 py-1.5 text-xs font-bold text-sky-200 transition hover:bg-sky-500/30 disabled:opacity-40"
+                    >
+                      Play
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="mt-2 text-[11px] leading-snug text-slate-500">
+              Grade S pays €30k and +12 happiness. A meltdown costs €6k. A shift takes about 3 min at 4× speed (12 at 1×). The city pauses while you play.
+            </p>
+          </Card>
+
           {/* lines */}
           <Card title={`Lines (${g.lines.length})`}>
             {g.lines.length === 0 ? (
@@ -902,6 +1031,30 @@ export default function GameView() {
               ))}
             </ul>
           </Card>
+        </div>
+      )}
+
+      {station && (
+        <div className="absolute inset-0 z-40 flex flex-col bg-black/90">
+          <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-[#0b0f17] px-4 py-2">
+            <div className="text-sm font-semibold">
+              🚉 {station.st.name} · Railgrid shift <span className="font-normal text-slate-400">· city is paused</span>
+            </div>
+            {stationReward && <div className="text-sm font-bold text-emerald-300">{stationReward}</div>}
+            <button
+              onClick={closeStation}
+              className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-bold hover:bg-white/20"
+            >
+              {stationReward ? "Back to Madrid" : "Leave (no reward)"}
+            </button>
+          </div>
+          <iframe
+            key={station.key}
+            ref={iframeRef}
+            src="/station/index.html?embed=1"
+            title="Railgrid station"
+            className="min-h-0 flex-1 border-0"
+          />
         </div>
       )}
 
